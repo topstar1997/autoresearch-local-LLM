@@ -1,0 +1,22 @@
+{
+  "version": "0.1",
+  "type": "container",
+  "ops": [
+    {
+      "id": "autoresearch-local-llm",
+      "args": {
+        "cmd": ["bash", "-c", "apt-get update; apt-get install -y git curl wget; git clone https://github.com/SohniSwatantra/autoresearch-local-llm.git /workspace; cd /workspace; bash nosana_setup.sh"],
+        "gpu": true,
+        "image": "docker.io/nvidia/cuda:12.8.0-devel-ubuntu22.04",
+        "expose": 8888
+      },
+      "type": "container/run"
+    }
+  ],
+  "meta": {
+    "trigger": "dashboard",
+    "system_requirements": {
+      "required_vram": 48
+    }
+  }
+}
