@@ -21,7 +21,7 @@ from datetime import datetime
 # ---------------------------------------------------------------------------
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL = "qwen3.5:9b"
+MODEL = "Qwen3.5:latest"
 TRAIN_SCRIPT = "train.py"
 RESULTS_FILE = "results.tsv"
 RUN_LOG = "run.log"
@@ -227,8 +227,10 @@ CONSTRAINTS:
 - Cannot modify prepare.py (data loading, evaluation are fixed)
 - Cannot install new packages
 - Training runs for a fixed 5-minute time budget
-- GPU has 48GB VRAM (shared with this LLM model using ~12GB)
-- Available VRAM for training: ~35GB
+- This system uses Apple Silicon MPS (128GB unified memory) or NVIDIA CUDA
+- The code auto-detects MPS vs CUDA - do NOT add device-specific code
+- Do NOT use torch.compile decorators or CUDA-specific APIs
+- Do NOT use flash-attn or kernels package (we use F.scaled_dot_product_attention)
 
 CURRENT train.py:
 ```python
