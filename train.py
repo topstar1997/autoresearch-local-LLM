@@ -202,10 +202,11 @@ class GPT(nn.Module):
         head_dim = self.config.n_embd // self.config.n_head
         cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim)
         self.cos, self.sin = cos, sin
-        # Cast embeddings to bf16
-        self.transformer.wte.to(dtype=torch.bfloat16)
-        for ve in self.value_embeds.values():
-            ve.to(dtype=torch.bfloat16)
+        # Cast embeddings to bf16 (CUDA only — MPS doesn't support mixed bf16/f32 in optimizer)
+        if _device_type == "cuda":
+            self.transformer.wte.to(dtype=torch.bfloat16)
+            for ve in self.value_embeds.values():
+                ve.to(dtype=torch.bfloat16)
 
     def _precompute_rotary_embeddings(self, seq_len, head_dim, base=10000, device=None):
         if device is None:
@@ -215,7 +216,8 @@ class GPT(nn.Module):
         t = torch.arange(seq_len, dtype=torch.float32, device=device)
         freqs = torch.outer(t, inv_freq)
         cos, sin = freqs.cos(), freqs.sin()
-        cos, sin = cos.bfloat16(), sin.bfloat16()
+        if _device_type == "cuda":
+            cos, sin = cos.bfloat16(), sin.bfloat16()
         cos, sin = cos[None, :, None, :], sin[None, :, None, :]
         return cos, sin
 
@@ -346,7 +348,7 @@ def muon_step_fused(stacked_grads, stacked_params, momentum_buffer, second_momen
     momentum_buffer.lerp_(stacked_grads, 1 - momentum)
     g = stacked_grads.lerp_(momentum_buffer, momentum)
     # Polar express orthogonalization
-    X = g.bfloat16()
+    X = g if _device_type == "mps" else g.bfloat16()
     X = X / (X.norm(dim=(-2, -1), keepdim=True) * 1.02 + 1e-6)
     if g.size(-2) > g.size(-1):
         for a, b, c in polar_express_coeffs[:ns_steps]:
@@ -383,17 +385,19 @@ class MuonAdamW(torch.optim.Optimizer):
 
     def __init__(self, param_groups):
         super().__init__(param_groups, defaults={})
-        # 0-D CPU tensors to avoid torch.compile recompilation when values change
-        self._adamw_step_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._adamw_lr_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._adamw_beta1_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._adamw_beta2_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._adamw_eps_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._adamw_wd_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._muon_momentum_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._muon_lr_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._muon_wd_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._muon_beta2_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
+        # 0-D tensors for scalar hyperparams. On CUDA these live on CPU to avoid
+        # torch.compile recompilation; on MPS they must be on-device (no compile).
+        _sdev = "cpu" if _device_type == "cuda" else _device_type
+        self._adamw_step_t = torch.tensor(0.0, dtype=torch.float32, device=_sdev)
+        self._adamw_lr_t = torch.tensor(0.0, dtype=torch.float32, device=_sdev)
+        self._adamw_beta1_t = torch.tensor(0.0, dtype=torch.float32, device=_sdev)
+        self._adamw_beta2_t = torch.tensor(0.0, dtype=torch.float32, device=_sdev)
+        self._adamw_eps_t = torch.tensor(0.0, dtype=torch.float32, device=_sdev)
+        self._adamw_wd_t = torch.tensor(0.0, dtype=torch.float32, device=_sdev)
+        self._muon_momentum_t = torch.tensor(0.0, dtype=torch.float32, device=_sdev)
+        self._muon_lr_t = torch.tensor(0.0, dtype=torch.float32, device=_sdev)
+        self._muon_wd_t = torch.tensor(0.0, dtype=torch.float32, device=_sdev)
+        self._muon_beta2_t = torch.tensor(0.0, dtype=torch.float32, device=_sdev)
 
     def _step_adamw(self, group):
         for p in group['params']:
@@ -460,7 +464,7 @@ HEAD_DIM = 128          # target head dimension for attention
 WINDOW_PATTERN = "L"    # sliding window pattern: L=full, S=half context
 
 # Optimization
-TOTAL_BATCH_SIZE = 2**16 # ~65K tokens per optimizer step (reduced for shared VRAM)
+TOTAL_BATCH_SIZE = 2**17 # ~131K tokens per optimizer step
 EMBEDDING_LR = 0.6      # learning rate for token embeddings (Adam)
 UNEMBEDDING_LR = 0.004  # learning rate for lm_head (Adam)
 MATRIX_LR = 0.04        # learning rate for matrix parameters (Muon)
@@ -523,6 +527,9 @@ with torch.device("meta"):
     model = GPT(config)
 model.to_empty(device=device)
 model.init_weights()
+# On MPS, force entire model to float32 to avoid bf16/f32 dtype mixing errors
+if device.type == "mps":
+    model.float()
 
 param_counts = model.num_scaling_params()
 print("Parameter counts:")
