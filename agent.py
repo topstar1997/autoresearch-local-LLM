@@ -252,6 +252,11 @@ def apply_search_replace(code, search, replace):
             if line.rstrip() == first_line:
                 for j in range(i, min(i + len(search.split("\n")) + 5, len(code_lines))):
                     if code_lines[j].rstrip() == last_line:
+                        # Validate match span is close to expected length
+                        expected_lines = len([ln for ln in search.split("\n") if ln.strip()])
+                        actual_lines = len([ln for ln in code_lines[i:j+1] if ln.strip()])
+                        if abs(actual_lines - expected_lines) > 3:
+                            continue
                         original_block = "\n".join(code_lines[i:j+1])
                         return code.replace(original_block, replace, 1), True
     return code, False
